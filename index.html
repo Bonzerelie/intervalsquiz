@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Musical Intervals Quiz</title>
+  <link rel="stylesheet" href="style.css" />
+
+  <script defer src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+</head>
+
+<body>
+  <div class="app" id="appRoot">
+    <header class="hero">
+      <picture class="heroTitle">
+        <source media="(max-width: 520px)" srcset="images/titlewrapped.png" />
+        <img class="heroTitleImg" src="images/title.png" alt="Musical Intervals Quiz" />
+      </picture>
+
+      <p class="app-subtitle">
+        Identify the note that is a specified <strong>interval</strong> above or below a given note.
+        Use the interactive piano at the top and the <strong>Information</strong> button for help.
+      </p>
+    </header>
+
+    <div id="beginModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="beginTitle">
+      <div class="modalCard" role="document">
+        <div class="modalHeader">
+          <h2 id="beginTitle">Welcome! 👋</h2>
+        </div>
+
+        <div class="modalBody">
+          <p>
+            This quiz asks you to correctly identify musical intervals. You will be given a starting note and an interval direction (e.g., Major Third above C). 
+            Fill out the quiz, submit your answers, and see how you did! You can use the piano image at the top to work notes out, and the 'Information' button for help.
+          </p>
+
+          <div class="beginOptions" aria-label="print options">
+            <div class="beginOptionRow">
+              <label class="beginLabel" for="questionCountSelect">Number of questions</label>
+              <select id="questionCountSelect" class="beginSelect" aria-label="Number of questions">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+                <option value="7">7</option>
+                <option value="8">8</option>
+                <option value="9">9</option>
+                <option value="10" selected>10</option>
+                <option value="11">11</option>
+                <option value="12">12</option>
+                <option value="13">13</option>
+                <option value="14">14</option>
+                <option value="15">15</option>
+                <option value="16">16</option>
+                <option value="17">17</option>
+                <option value="18">18</option>
+                <option value="19">19</option>
+                <option value="20">20</option>
+              </select>
+            </div>
+            <div class="beginAdvice" id="pageAdvice">—</div>
+          </div>
+        </div>
+
+        <div class="modalFooter">
+          <button id="beginBtn" class="primary pulse" type="button">Begin Game</button>
+        </div>
+      </div>
+    </div>
+
+    <section class="controlsPanel controlsPanelActions" aria-label="top actions">
+      <div class="actionsRow actionsCentered">
+        <button id="infoBtn" type="button">Information</button>
+        <button id="inputModeBtn" type="button" disabled>Input mode: Dropdown</button>
+        <button id="downloadTaskBtn" type="button" disabled>Download as A4 task sheet</button>
+        <button id="downloadScorecardBtn" type="button" disabled>Download scorecard</button>
+        <button id="resetBtn" type="button" disabled>Reset game</button>
+      </div>
+    </section>
+
+    <section class="keyboardWrap" aria-label="piano keyboard">
+      <div id="topKeyboardMount" class="mount topKeyboardMount" aria-label="Interactive keyboard"></div>
+    </section>
+
+    <main class="quizWrap" aria-label="quiz">
+      <div class="quizHeaderRow">
+        <div class="quizTitle" id="quizTitle">
+          <img class="questionsBadge" src="images/questions.png" alt="Questions" />
+          <div id="kbdModeHint" class="kbdModeHint hidden">
+            Highlight the correct target note on the keyboard. The starting note is pre-highlighted in blue. 
+          </div>
+        </div>
+        <div class="quizMeta" id="quizMeta">—</div>
+      </div>
+
+      <ol id="questionsList" class="questionsList" aria-label="questions"></ol>
+
+      <section class="controlsPanel controlsPanelActions" aria-label="submit">
+        <div class="actionsRow actionsCentered">
+          <button id="submitBtn" class="primary" type="button" disabled>Submit Answers</button>
+        </div>
+      </section>
+
+      <section id="resultsPanel" class="resultsPanel hidden" aria-label="results">
+        <div class="analysisCard">
+          <div class="analysisLabel">Results</div>
+          <div class="analysisBody" id="resultsSummary">—</div>
+        </div>
+
+        <section class="controlsPanel controlsPanelActions" aria-label="post actions">
+          <div class="actionsRow actionsCentered">
+            <button id="resetBtn2" type="button">Reset game</button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="infoModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="infoTitle">
+      <div class="modalCard" role="document">
+        <div class="modalHeader">
+          <h2 id="infoTitle">More information 🧐</h2>
+        </div>
+        <div class="modalBody">
+          <p>
+            In music, an <strong>interval</strong> is the distance in pitch between two notes. Being able to quickly identify the target note of an interval is an exceptionally useful skill.
+          </p>
+          <p>
+            Intervals are measured in semitones (or half-steps). Here are the intervals between a perfect unison (two identical pitches), up to an octave.
+            <br><br><strong>Perfect Unison (P1) </strong>: 0 semitones
+            <br><strong>Minor 2nd (semitone / halftone / m2)</strong>: 1 semitones
+            <br><strong>Major 2nd (tone / whole tone / M2)</strong>: 2 semitones
+            <br><strong>Minor 3rd (m3)</strong>: 3 semitones
+            <br><strong>Major 3rd (M3)</strong>: 4 semitones
+            <br><strong>Perfect 4th (P3)</strong>: 5 semitones
+            <br><strong>Tritone (TT)</strong>: 6 semitones
+            <br><strong>Perfect 5th (P5)</strong>: 7 semitones
+            <br><strong>Minor 6th (m6)</strong>: 8 semitones
+            <br><strong>Major 6th (M6)</strong>: 9 semitones
+            <br><strong>Minor 7th (m7)</strong>: 10 semitones
+            <br><strong>Major 7th (M7)</strong>: 11 semitones
+            <br><strong>Perfect Octave (P8)</strong>: 12 semitones
+          </p>
+          <p>
+            Use the reference keyboard at the top to audition notes. You can count the semitones up or down from the starting note to find your answer.
+          </p>
+        </div>
+        <div class="modalFooter">
+          <button id="infoOk" class="primary" type="button">Got it!</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="taskSheetTemplate" class="hidden" aria-hidden="true"></div>
+
+    <div id="scorecardTemplate" class="hidden" aria-hidden="true"></div>
+  </div>
+
+  <script defer src="script.js"></script>
+</body>
+</html>

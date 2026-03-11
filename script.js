@@ -1,0 +1,1005 @@
+/* /script.js */
+(() => {
+  "use strict";
+
+  // -------------------- Config --------------------
+  const AUDIO_DIR = "audio";
+  const FADE_OUT_SEC = 0.12;
+  const LIMITER_THRESHOLD_DB = -6;
+
+  // Reference keyboard at top
+  const KBD_START_OCT = 3;
+  const KBD_OCTAVES = 3;
+
+  // Mini keyboards (results) - reduced to 2 to match question sizing
+  const MINI_KBD_START_OCT = 3;
+  const MINI_KBD_OCTAVES = 2;
+  const MINI_KBD_INCLUDE_END_C = true;
+
+  // Per-question input keyboard - reduced to 2 for larger keys
+  const Q_KBD_START_OCT = 3; 
+  const Q_KBD_OCTAVES = 2;   
+  const Q_KBD_INCLUDE_END_C = true;
+
+  // Task sheet printed keyboards - reduced to 2
+  const TASK_KBD_START_OCT = 3; 
+  const TASK_KBD_OCTAVES = 2;
+  const TASK_KBD_INCLUDE_END_C = true;
+
+  const TASK_Q_PER_PAGE_KBD = 12;
+  const TASK_Q_PER_PAGE_DROPDOWN = 24;
+
+  const PDF_MARGIN_PT = 18;
+
+  const PC_TO_STEM = {
+    0: "c", 1: "csharp", 2: "d", 3: "dsharp", 4: "e", 5: "f",
+    6: "fsharp", 7: "g", 8: "gsharp", 9: "a", 10: "asharp", 11: "b",
+  };
+
+  const PC_SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  const PC_FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+  const ACC_PCS = new Set([1, 3, 6, 8, 10]);
+
+  const NOTE_OPTIONS = [
+    { pc: 0, label: "C" }, { pc: 1, label: "C#/Db" }, { pc: 2, label: "D" }, { pc: 3, label: "D#/Eb" },
+    { pc: 4, label: "E" }, { pc: 5, label: "F" }, { pc: 6, label: "F#/Gb" }, { pc: 7, label: "G" },
+    { pc: 8, label: "G#/Ab" }, { pc: 9, label: "A" }, { pc: 10, label: "A#/Bb" }, { pc: 11, label: "B" },
+  ];
+
+  const INTERVALS = [
+    { semitones: 1, name: "Minor Second", short: "m2" },
+    { semitones: 2, name: "Major Second", short: "M2" },
+    { semitones: 3, name: "Minor Third", short: "m3" },
+    { semitones: 4, name: "Major Third", short: "M3" },
+    { semitones: 5, name: "Perfect Fourth", short: "P4" },
+    { semitones: 6, name: "Tritone", short: "TT" },
+    { semitones: 7, name: "Perfect Fifth", short: "P5" },
+    { semitones: 8, name: "Minor Sixth", short: "m6" },
+    { semitones: 9, name: "Major Sixth", short: "M6" },
+    { semitones: 10, name: "Minor Seventh", short: "m7" },
+    { semitones: 11, name: "Major Seventh", short: "M7" },
+    { semitones: 12, name: "Perfect Octave", short: "P8" }
+  ];
+
+  const INPUT_MODE = {
+    DROPDOWN: "dropdown",
+    KEYBOARD: "keyboard",
+  };
+
+  // -------------------- DOM --------------------
+  const $ = (id) => document.getElementById(id);
+
+  const beginModal = $("beginModal");
+  const beginBtn = $("beginBtn");
+  const questionCountSelect = $("questionCountSelect");
+  const pageAdvice = $("pageAdvice");
+
+  const infoBtn = $("infoBtn");
+  const infoModal = $("infoModal");
+  const infoOk = $("infoOk");
+
+  const inputModeBtn = $("inputModeBtn");
+
+  const downloadTaskBtn = $("downloadTaskBtn");
+  const downloadScorecardBtn = $("downloadScorecardBtn");
+  const resetBtn = $("resetBtn");
+  const resetBtn2 = $("resetBtn2");
+
+  const topKeyboardMount = $("topKeyboardMount");
+
+  const quizTitle = $("quizTitle");
+  const quizMeta = $("quizMeta");
+  const questionsList = $("questionsList");
+  const kbdModeHint = $("kbdModeHint");
+  const submitBtn = $("submitBtn");
+
+  const resultsPanel = $("resultsPanel");
+  const resultsSummary = $("resultsSummary");
+
+  const taskSheetTemplate = $("taskSheetTemplate");
+  const scorecardTemplate = $("scorecardTemplate");
+
+  // -------------------- Audio (WebAudio) --------------------
+  let audioCtx = null;
+  let masterGain = null;
+  let limiter = null;
+
+  const bufferPromiseCache = new Map();
+  const activeVoices = new Set();
+
+  function postHeightToParent(height) {
+    if (window.parent === window) return;
+    const TARGET_ORIGIN = "*";
+    window.parent.postMessage(
+      {
+        iframeHeight: Math.max(0, Math.round(height)),
+        type: "intervals:height",
+        height: Math.max(0, Math.round(height)),
+        frameId: document.documentElement.getAttribute("data-frame-id") || null,
+      },
+      TARGET_ORIGIN
+    );
+  }
+
+  function measureDocHeightPx() {
+    const de = document.documentElement;
+    const body = document.body;
+    return Math.max(
+      body?.scrollHeight ?? 0, body?.offsetHeight ?? 0,
+      de?.clientHeight ?? 0, de?.scrollHeight ?? 0, de?.offsetHeight ?? 0
+    );
+  }
+
+  function setupIframeAutoHeight() {
+    const send = () => postHeightToParent(measureDocHeightPx());
+    send();
+    window.addEventListener("load", send, { passive: true });
+    const ro = new ResizeObserver(() => send());
+    const appRoot = document.getElementById("appRoot") || document.body;
+    if (appRoot) ro.observe(appRoot);
+    const mo = new MutationObserver(() => send());
+    mo.observe(appRoot || document.body, { attributes: true, childList: true, subtree: true });
+    window.__intervalsSendHeight = send;
+  }
+
+  function ensureAudioGraph() {
+    if (audioCtx) return audioCtx;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) {
+      alert("Your browser doesn’t support Web Audio (required for playback).");
+      return null;
+    }
+    audioCtx = new Ctx();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.9;
+    limiter = audioCtx.createDynamicsCompressor();
+    limiter.threshold.value = LIMITER_THRESHOLD_DB;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.001;
+    limiter.release.value = 0.12;
+    masterGain.connect(limiter);
+    limiter.connect(audioCtx.destination);
+    return audioCtx;
+  }
+
+  async function resumeAudioIfNeeded() {
+    const ctx = ensureAudioGraph();
+    if (!ctx) return;
+    if (ctx.state === "suspended") {
+      try { await ctx.resume(); } catch {}
+    }
+  }
+
+  function stopAllNotes(fadeSec = 0.06) {
+    const ctx = ensureAudioGraph();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const fade = Math.max(0.02, Number.isFinite(fadeSec) ? fadeSec : 0.06);
+    for (const v of Array.from(activeVoices)) {
+      try {
+        v.gain.gain.cancelScheduledValues(now);
+        v.gain.gain.setTargetAtTime(0, now, fade / 6);
+        const stopAt = Math.max(now + fade, (v.startTime || now) + 0.001);
+        v.src.stop(stopAt + 0.02);
+      } catch {}
+    }
+  }
+
+  function trackVoice(src, gain, startTime) {
+    const voice = { src, gain, startTime };
+    activeVoices.add(voice);
+    src.onended = () => activeVoices.delete(voice);
+    return voice;
+  }
+
+  function noteUrl(stem, octaveNum) {
+    return `${AUDIO_DIR}/${stem}${octaveNum}.mp3`;
+  }
+
+  function loadBuffer(url) {
+    if (bufferPromiseCache.has(url)) return bufferPromiseCache.get(url);
+    const p = (async () => {
+      const ctx = ensureAudioGraph();
+      if (!ctx) return null;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const ab = await res.arrayBuffer();
+        return await ctx.decodeAudioData(ab);
+      } catch {
+        return null;
+      }
+    })();
+    bufferPromiseCache.set(url, p);
+    return p;
+  }
+
+  function playBufferWindowed(buffer, whenSec, playSec, fadeOutSec, gain = 1) {
+    const ctx = ensureAudioGraph();
+    if (!ctx || !masterGain) return null;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const g = ctx.createGain();
+    const safeGain = Math.max(0, Number.isFinite(gain) ? gain : 1);
+    const fadeIn = 0.01;
+    const endAt = whenSec + Math.max(0.05, playSec);
+    g.gain.setValueAtTime(0, whenSec);
+    g.gain.linearRampToValueAtTime(safeGain, whenSec + fadeIn);
+    const fadeStart = Math.max(whenSec + 0.02, endAt - Math.max(0.06, fadeOutSec));
+    g.gain.setValueAtTime(safeGain, fadeStart);
+    g.gain.linearRampToValueAtTime(0, endAt);
+    src.connect(g);
+    g.connect(masterGain);
+    trackVoice(src, g, whenSec);
+    src.start(whenSec);
+    src.stop(endAt + 0.03);
+    return src;
+  }
+
+  function pcFromPitch(p) { return ((p % 12) + 12) % 12; }
+  function octFromPitch(p) { return Math.floor(p / 12); }
+  function pitchFromPcOct(pc, oct) { return oct * 12 + pc; }
+
+  function rangeHiPitch(startPitch, octaves, includeEndC = false) {
+    const totalSemis = Math.max(0, Math.round(octaves)) * 12;
+    let hi = startPitch + totalSemis - 1;
+    if (includeEndC && pcFromPitch(startPitch) === 0) hi += 1; 
+    return hi;
+  }
+
+  function getStemForPc(pc) {
+    return PC_TO_STEM[(pc + 12) % 12] || null;
+  }
+
+  async function loadPitchBuffer(pitch) {
+    const pc = pcFromPitch(pitch);
+    const oct = octFromPitch(pitch);
+    const stem = getStemForPc(pc);
+    if (!stem) return { missingUrl: null, buffer: null };
+    const url = noteUrl(stem, oct);
+    const buf = await loadBuffer(url);
+    if (!buf) return { missingUrl: url, buffer: null };
+    return { missingUrl: null, buffer: buf };
+  }
+
+  async function playPitchesWindowed(pitches, playSec = 1.4) {
+    await resumeAudioIfNeeded();
+    const ctx = ensureAudioGraph();
+    if (!ctx) return false;
+    const whenSec = ctx.currentTime + 0.03;
+    const results = await Promise.all(pitches.map(loadPitchBuffer));
+    const missing = results.find((r) => r?.missingUrl);
+    if (missing?.missingUrl) {
+      alert(`Missing audio sample: ${missing.missingUrl}`);
+      return false;
+    }
+    const bufs = results.map((r) => r?.buffer).filter(Boolean);
+    if (!bufs.length) return false;
+    const perNoteGain = 0.8 / Math.max(1, bufs.length);
+    for (const b of bufs) playBufferWindowed(b, whenSec, playSec, FADE_OUT_SEC, perNoteGain);
+    return true;
+  }
+
+  // -------------------- Theory helpers --------------------
+  function noteLabelForPc(pc) {
+    const p = ((pc % 12) + 12) % 12;
+    return ACC_PCS.has(p) ? `${PC_SHARP[p]}/${PC_FLAT[p]}` : PC_SHARP[p];
+  }
+
+  function questionTitle(q) {
+    const rootName = noteLabelForPc(pcFromPitch(q.rootPitch));
+    const dir = q.direction === 1 ? "above" : "below";
+    return `${q.interval.name} (${q.interval.short}) ${dir} ${rootName}`;
+  }
+
+  // -------------------- Keyboard SVG --------------------
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function svgEl(tag, attrs = {}, children = []) {
+    const n = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v === undefined) continue;
+      n.setAttribute(k, String(v));
+    }
+    for (const c of children) n.appendChild(c);
+    return n;
+  }
+
+  function whiteIndexInOctave(pc) {
+    const m = { 0: 0, 2: 1, 4: 2, 5: 3, 7: 4, 9: 5, 11: 6 };
+    return m[pc] ?? null;
+  }
+
+  function buildKeyboardSvg({
+    startPitch,
+    octaves,
+    includeEndC = false,
+    widthPx = 980,
+    heightPx = 190,
+    interactive = true,
+    ariaLabel = "Keyboard",
+    highlight = null, // Map<pitch, "hit"|"hitOk"|"hitBad"|"userSel"|"printHit">
+    onKeyDown = null,
+    theme = null, 
+  }) {
+    const lo = startPitch;
+    const hi = rangeHiPitch(startPitch, octaves, includeEndC);
+    const all = [];
+    for (let p = lo; p <= hi; p++) all.push(p);
+
+    const WHITE_W = 28;
+    const WHITE_H = 124;
+    const BLACK_W = 17;
+    const BLACK_H = 78;
+    const BORDER = 10;
+    const RADIUS = 18;
+
+    const t = {
+      frameFill: theme?.frameFill ?? "#fff",
+      whiteFill: theme?.whiteFill ?? "#fff",
+      whiteStroke: theme?.whiteStroke ?? "#222",
+      blackFill: theme?.blackFill ?? "#111",
+      blackStroke: theme?.blackStroke ?? "#000",
+    };
+
+    const whitePitches = all.filter((p) => whiteIndexInOctave(pcFromPitch(p)) != null);
+    const totalWhite = whitePitches.length;
+    const innerW = totalWhite * WHITE_W;
+    const outerW = innerW + BORDER * 2;
+    const outerH = WHITE_H + BORDER * 2;
+
+    const svg = svgEl("svg", {
+      width: outerW, height: outerH,
+      viewBox: `0 0 ${outerW} ${outerH}`,
+      preserveAspectRatio: "xMidYMid meet",
+      role: "img", "aria-label": ariaLabel,
+    });
+
+    const style = svgEl("style");
+    style.textContent = `
+      .frame{ fill:${t.frameFill}; stroke:#000; stroke-width:${BORDER}; rx:${RADIUS}; ry:${RADIUS}; }
+      .w rect{ fill:${t.whiteFill}; stroke:${t.whiteStroke}; stroke-width:1; }
+      .b rect{ fill:${t.blackFill}; stroke:${t.blackStroke}; stroke-width:1; rx:3; ry:3; }
+      .key { cursor: ${interactive ? "pointer" : "default"}; }
+      .hit rect { fill: var(--kbdHit) !important; }
+      .hitOk rect { fill: var(--kbdHitOk) !important; }
+      .hitBad rect { fill: var(--kbdHitBad) !important; }
+      .userSel rect { fill: var(--kbdUserSel) !important; }
+      .printHit rect { fill: #d4d4d4 !important; }
+    `;
+    svg.appendChild(style);
+
+    svg.appendChild(
+      svgEl("rect", {
+        x: BORDER / 2, y: BORDER / 2, width: outerW - BORDER, height: outerH - BORDER, rx: RADIUS, ry: RADIUS, class: "frame",
+      })
+    );
+
+    const gW = svgEl("g");
+    const gB = svgEl("g");
+    svg.appendChild(gW);
+    svg.appendChild(gB);
+
+    const startX = BORDER;
+    const startY = BORDER;
+    const whiteIndexByPitch = new Map();
+    whitePitches.forEach((p, i) => whiteIndexByPitch.set(p, i));
+
+    function classForPitch(p, base) {
+      if (!highlight) return base;
+      const c = highlight.get(p);
+      if (!c) return base;
+      return `${base} ${c}`;
+    }
+
+    for (let i = 0; i < whitePitches.length; i++) {
+      const p = whitePitches[i];
+      const x = startX + i * WHITE_W;
+      const grp = svgEl("g", { class: `${classForPitch(p, "w")} key`, "data-pitch": String(p), tabindex: interactive ? "0" : "-1" });
+      grp.appendChild(svgEl("rect", { x, y: startY, width: WHITE_W, height: WHITE_H }));
+      if (interactive && typeof onKeyDown === "function") {
+        grp.addEventListener("pointerdown", (e) => { e.preventDefault(); onKeyDown(p, grp); });
+      }
+      gW.appendChild(grp);
+    }
+
+    const leftPcByBlack = { 1: 0, 3: 2, 6: 5, 8: 7, 10: 9 };
+    for (let p = lo; p <= hi; p++) {
+      const pc = pcFromPitch(p);
+      if (!ACC_PCS.has(pc)) continue;
+      const leftPc = leftPcByBlack[pc];
+      if (leftPc == null) continue;
+      const oct = octFromPitch(p);
+      const leftWhitePitch = pitchFromPcOct(leftPc, oct);
+      const wi = whiteIndexByPitch.get(leftWhitePitch);
+      if (wi == null) continue;
+      const leftX = startX + wi * WHITE_W;
+      const x = leftX + WHITE_W - BLACK_W / 2;
+      const grp = svgEl("g", { class: `${classForPitch(p, "b")} key`, "data-pitch": String(p), tabindex: interactive ? "0" : "-1" });
+      grp.appendChild(svgEl("rect", { x, y: startY, width: BLACK_W, height: BLACK_H }));
+      if (interactive && typeof onKeyDown === "function") {
+        grp.addEventListener("pointerdown", (e) => { e.preventDefault(); onKeyDown(p, grp); });
+      }
+      gB.appendChild(grp);
+    }
+    return svg;
+  }
+
+  function flashKeyGroup(groupEl, ms = 240) {
+    if (!groupEl) return;
+    groupEl.classList.add("hit");
+    window.setTimeout(() => groupEl.classList.remove("hit"), ms);
+  }
+
+  // -------------------- Game state --------------------
+  const state = {
+    started: false, submitted: false, questions: [], questionCount: 10,
+    createdOn: null, createdOnText: "", inputMode: INPUT_MODE.DROPDOWN,
+  };
+
+  function clampQuestions(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return 10;
+    return Math.min(20, Math.max(1, Math.round(v)));
+  }
+
+  function generateQuestions(count) {
+    const target = clampQuestions(count);
+    const picked = [];
+    
+    // The bounds for our 2-octave question keyboard
+    const kbdMinPitch = Q_KBD_START_OCT * 12; // 36 (C3)
+    const kbdMaxPitch = kbdMinPitch + (Q_KBD_OCTAVES * 12); // 60 (C5)
+
+    for (let i = 0; i < target; i++) {
+      const interval = INTERVALS[Math.floor(Math.random() * INTERVALS.length)];
+      const direction = Math.random() < 0.5 ? 1 : -1;
+      
+      let minStart, maxStart;
+      
+      if (direction === 1) { // Up
+        // Start note must be low enough so that root + interval <= maxPitch
+        minStart = kbdMinPitch;
+        maxStart = kbdMaxPitch - interval.semitones;
+      } else { // Down
+        // Start note must be high enough so that root - interval >= minPitch
+        minStart = kbdMinPitch + interval.semitones;
+        maxStart = kbdMaxPitch;
+      }
+
+      // Safe root pitch guaranteeing the answer fits on the keyboard
+      const rootPitch = Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart;
+      const correctPitch = rootPitch + (direction * interval.semitones);
+      
+      picked.push({
+        id: `q${i + 1}`,
+        rootPitch,
+        interval,
+        direction,
+        correctPitch,
+        correctPc: pcFromPitch(correctPitch),
+        userPc: null,
+        userPitch: null,
+        marks: 0
+      });
+    }
+    return picked;
+  }
+
+  function resetGameToInitial() {
+    stopAllNotes(0.08);
+    state.started = false; state.submitted = false; state.questions = [];
+    state.createdOn = null; state.createdOnText = ""; state.inputMode = INPUT_MODE.DROPDOWN;
+    questionsList.innerHTML = "";
+    resultsPanel.classList.add("hidden");
+    resultsSummary.textContent = "—";
+    submitBtn.disabled = true; downloadTaskBtn.disabled = true; downloadScorecardBtn.disabled = true; resetBtn.disabled = false;
+    quizMeta.textContent = "";
+    beginModal.classList.remove("hidden");
+    inputModeBtn.disabled = true; inputModeBtn.textContent = "Input mode: Dropdown";
+    updateKeyboardModeHint(); updatePageAdvice();
+  }
+
+  function startGame() {
+    state.started = true; state.submitted = false;
+    state.questions = generateQuestions(state.questionCount);
+    state.createdOn = new Date();
+    state.createdOnText = state.createdOn.toLocaleDateString("en-GB");
+    renderQuiz();
+    submitBtn.disabled = false; downloadTaskBtn.disabled = false; downloadScorecardBtn.disabled = true; resetBtn.disabled = false;
+    inputModeBtn.disabled = false; syncInputModeBtnText(); updateKeyboardModeHint();
+    beginModal.classList.add("hidden");
+  }
+
+  function updateKeyboardModeHint() {
+    if (!kbdModeHint) return;
+    if (state.inputMode === INPUT_MODE.KEYBOARD) kbdModeHint.classList.remove("hidden");
+    else kbdModeHint.classList.add("hidden");
+  }
+
+  function syncInputModeBtnText() {
+    inputModeBtn.textContent = state.inputMode === INPUT_MODE.KEYBOARD ? "Input mode: Keyboard" : "Input mode: Dropdown";
+  }
+
+  function chunkArray(arr, size) {
+    const out = [];
+    const n = Math.max(1, Math.floor(size));
+    for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+    return out;
+  }
+
+  function updatePageAdvice() {
+    const qCount = clampQuestions(Number(questionCountSelect?.value ?? 10));
+    state.questionCount = qCount;
+    const perPageLimit = state.inputMode === INPUT_MODE.KEYBOARD ? TASK_Q_PER_PAGE_KBD : TASK_Q_PER_PAGE_DROPDOWN;
+    const pages = Math.ceil(qCount / perPageLimit);
+    const perPage = qCount <= perPageLimit ? `${qCount} on 1 page` : `${perPageLimit} per page (last page ${qCount % perPageLimit || perPageLimit})`;
+    if (pageAdvice) pageAdvice.textContent = `PDF tip: ${qCount} questions → ${pages} A4 page(s), ${perPage}.`;
+  }
+
+  // -------------------- Rendering --------------------
+  function buildNoteSelect(selectId) {
+    const sel = document.createElement("select");
+    sel.id = selectId;
+    const opt0 = document.createElement("option");
+    opt0.value = ""; opt0.textContent = "— select —";
+    sel.appendChild(opt0);
+    for (const opt of NOTE_OPTIONS) {
+      const o = document.createElement("option");
+      o.value = String(opt.pc); o.textContent = opt.label;
+      sel.appendChild(o);
+    }
+    return sel;
+  }
+
+  function clearQuestionAnswer(q) { q.userPitch = null; }
+
+  function renderKeyboardInputForQuestion(q, li) {
+    const wrap = document.createElement("div");
+    wrap.className = "qKbdWrap";
+    const slots = document.createElement("div");
+    slots.className = "qSlots";
+
+    const s = document.createElement("div");
+    s.className = "qSlot";
+    const l = document.createElement("div");
+    l.className = "qSlotLabel";
+    l.textContent = "Target Note";
+    const v = document.createElement("div");
+    v.className = "qSlotValue";
+    v.id = `${q.id}-slot`;
+    v.textContent = q.userPitch == null ? "—" : noteLabelForPc(pcFromPitch(q.userPitch));
+
+    s.appendChild(l); s.appendChild(v); slots.appendChild(s);
+
+    const mount = document.createElement("div");
+    mount.className = "qKbdMount mount";
+    mount.id = `${q.id}-kbd-mount`;
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "qSlotBtnRow";
+    btnRow.id = `${q.id}-kbd-actions`;
+
+    const hearBtn = document.createElement("button");
+    hearBtn.type = "button"; hearBtn.textContent = "Hear selection"; hearBtn.disabled = state.submitted;
+    hearBtn.addEventListener("click", async () => {
+      await resumeAudioIfNeeded();
+      stopAllNotes(0.02);
+      if (q.userPitch != null) await playPitchesWindowed([q.rootPitch, q.userPitch], 1.4);
+    });
+
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button"; clearBtn.textContent = "Clear"; clearBtn.disabled = state.submitted;
+    clearBtn.addEventListener("click", () => {
+      if (state.submitted) return;
+      clearQuestionAnswer(q);
+      renderKeyboardSlotValues(q);
+      renderQuestionKeyboardMount(q);
+    });
+
+    btnRow.appendChild(hearBtn); btnRow.appendChild(clearBtn);
+    wrap.appendChild(slots); wrap.appendChild(mount); wrap.appendChild(btnRow);
+    li.appendChild(wrap);
+
+    renderQuestionKeyboardMount(q, mount);
+  }
+
+  function renderKeyboardSlotValues(q) {
+    const el = $(`${q.id}-slot`);
+    if (el) el.textContent = q.userPitch == null ? "—" : noteLabelForPc(pcFromPitch(q.userPitch));
+  }
+
+  function renderQuestionKeyboardMount(q, mountEl = null) {
+    const mount = mountEl || $(`${q.id}-kbd-mount`);
+    if (!mount) return;
+    const startPitch = pitchFromPcOct(0, Q_KBD_START_OCT);
+    
+    const hl = new Map();
+    hl.set(q.rootPitch, "hit"); // Starting note is blue
+    if (q.userPitch != null) hl.set(q.userPitch, "userSel"); // Selection is yellow
+
+    mount.innerHTML = "";
+    mount.appendChild(
+      buildKeyboardSvg({
+        startPitch, octaves: Q_KBD_OCTAVES, includeEndC: Q_KBD_INCLUDE_END_C,
+        widthPx: 880, heightPx: 165, interactive: !state.submitted,
+        ariaLabel: "Question keyboard",
+        highlight: hl,
+        onKeyDown: async (pitch, groupEl) => {
+          if (state.submitted) return;
+          if (pitch === q.rootPitch) return; // Cannot select the start note
+
+          await resumeAudioIfNeeded();
+          stopAllNotes(0.02);
+          await playPitchesWindowed([pitch], 0.7);
+
+          if (q.userPitch === pitch) q.userPitch = null; // deselect
+          else q.userPitch = pitch;
+
+          renderKeyboardSlotValues(q);
+          renderQuestionKeyboardMount(q);
+        },
+      })
+    );
+  }
+
+  function renderQuiz() {
+    questionsList.innerHTML = "";
+    quizMeta.textContent = "";
+
+    state.questions.forEach((q, index) => {
+      const li = document.createElement("li");
+      li.className = "qCard"; li.dataset.qid = q.id;
+
+      const top = document.createElement("div");
+      top.className = "qTop";
+      const title = document.createElement("div");
+      title.className = "qTitle";
+      title.textContent = `${index + 1}. ${questionTitle(q)}`;
+
+      const marks = document.createElement("div");
+      marks.className = "qMarks"; marks.id = `${q.id}-marks`; marks.textContent = "0 / 1";
+
+      top.appendChild(title); top.appendChild(marks); li.appendChild(top);
+
+      if (state.inputMode === INPUT_MODE.DROPDOWN) {
+        const grid = document.createElement("div");
+        grid.className = "qGrid";
+        const wrap = document.createElement("div");
+        wrap.className = "qField";
+        const lab = document.createElement("label");
+        lab.setAttribute("for", `${q.id}-sel`); lab.textContent = "Target Note";
+        
+        const sel = buildNoteSelect(`${q.id}-sel`);
+        sel.value = q.userPc == null ? "" : String(q.userPc);
+        sel.disabled = state.submitted;
+        sel.addEventListener("change", () => {
+          q.userPc = sel.value === "" ? null : Number(sel.value);
+        });
+
+        wrap.appendChild(lab); wrap.appendChild(sel); grid.appendChild(wrap); li.appendChild(grid);
+      } else {
+        renderKeyboardInputForQuestion(q, li);
+      }
+
+      const feedback = document.createElement("div");
+      feedback.className = "qFeedback hidden";
+      feedback.id = `${q.id}-feedback`;
+      li.appendChild(feedback);
+      questionsList.appendChild(li);
+    });
+    window.__intervalsSendHeight?.();
+  }
+
+  function setSelectDisabledAll(disabled) {
+    const sels = questionsList.querySelectorAll("select");
+    sels.forEach((s) => s.disabled = disabled);
+  }
+
+  // -------------------- Mini keyboards per question (results) --------------------
+  function makeMiniKeyboardBlock({ title, mountId, btnText, onPlay }) {
+    const block = document.createElement("div");
+    block.className = "miniKbdBlock";
+    const t = document.createElement("div");
+    t.className = "miniKbdTitle"; t.textContent = title;
+    const mount = document.createElement("div");
+    mount.className = "mount miniMount"; mount.id = mountId;
+    const btnRow = document.createElement("div");
+    btnRow.className = "miniBtnRow";
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.textContent = btnText;
+    btn.addEventListener("click", onPlay);
+    btnRow.appendChild(btn);
+    block.appendChild(t); block.appendChild(mount); block.appendChild(btnRow);
+    return block;
+  }
+
+  function determineUserPitchForResults(q) {
+    if (state.inputMode === INPUT_MODE.KEYBOARD) return q.userPitch;
+    if (q.userPc == null) return null;
+    if (q.userPc === q.correctPc) return q.correctPitch;
+    
+    // Extrapolate dropdown PC to pitch based on direction
+    let p = q.rootPitch;
+    if (q.direction === 1) while (pcFromPitch(p) !== q.userPc) p++;
+    else while (pcFromPitch(p) !== q.userPc) p--;
+    return p;
+  }
+
+  function renderMiniKeyboardsForQuestion(q) {
+    const fb = $(`${q.id}-feedback`);
+    if (!fb) return;
+    fb.innerHTML = ""; fb.classList.remove("hidden");
+
+    const row = document.createElement("div");
+    row.className = "qFeedbackRow";
+
+    const miniStartPitch = pitchFromPcOct(0, MINI_KBD_START_OCT);
+    const resultUserPitch = determineUserPitchForResults(q);
+
+    const answeredMap = new Map();
+    answeredMap.set(q.rootPitch, "hit"); // start note blue
+    if (resultUserPitch != null) {
+      answeredMap.set(resultUserPitch, resultUserPitch === q.correctPitch ? "hitOk" : "hitBad");
+    }
+
+    const correctMap = new Map();
+    correctMap.set(q.rootPitch, "hit"); // start note
+    correctMap.set(q.correctPitch, "hitOk");
+
+    const answeredMountId = `${q.id}-mini-answered`;
+    const correctMountId = `${q.id}-mini-correct`;
+
+    const answeredBlock = makeMiniKeyboardBlock({
+      title: "Your answer", mountId: answeredMountId, btnText: "Hear Answer",
+      onPlay: async () => { if (resultUserPitch != null) await playPitchesWindowed([q.rootPitch, resultUserPitch], 1.6); },
+    });
+    const correctBlock = makeMiniKeyboardBlock({
+      title: "Correct answer", mountId: correctMountId, btnText: "Hear Correct",
+      onPlay: async () => { await playPitchesWindowed([q.rootPitch, q.correctPitch], 1.6); },
+    });
+
+    row.appendChild(answeredBlock); row.appendChild(correctBlock); fb.appendChild(row);
+
+    const chosenText = resultUserPitch == null ? "—" : noteLabelForPc(pcFromPitch(resultUserPitch));
+    const correctText = noteLabelForPc(q.correctPc);
+    const line = document.createElement("div");
+    line.className = "qAnswerLine";
+    const okClass = q.marks === 1 ? "ok" : "bad";
+    line.innerHTML = `
+      <span class="${okClass}">Marks: <strong>${q.marks} / 1</strong></span><br>
+      Your answer: <strong>${chosenText}</strong><br>
+      Correct: <strong>${correctText}</strong>
+    `;
+    fb.appendChild(line);
+
+    const answeredMount = $(answeredMountId); const correctMount = $(correctMountId);
+    if (answeredMount) answeredMount.appendChild(buildKeyboardSvg({ startPitch: miniStartPitch, octaves: MINI_KBD_OCTAVES, includeEndC: MINI_KBD_INCLUDE_END_C, widthPx: 520, heightPx: 120, interactive: false, ariaLabel: "Answered notes keyboard", highlight: answeredMap }));
+    if (correctMount) correctMount.appendChild(buildKeyboardSvg({ startPitch: miniStartPitch, octaves: MINI_KBD_OCTAVES, includeEndC: MINI_KBD_INCLUDE_END_C, widthPx: 520, heightPx: 120, interactive: false, ariaLabel: "Correct notes keyboard", highlight: correctMap }));
+  }
+
+  // -------------------- Marking --------------------
+  function markAll() {
+    state.submitted = true;
+    setSelectDisabledAll(true);
+    submitBtn.disabled = true; inputModeBtn.disabled = true;
+    let total = 0; const max = state.questions.length;
+
+    for (const q of state.questions) {
+      if (state.inputMode === INPUT_MODE.KEYBOARD) {
+        q.marks = q.userPitch === q.correctPitch ? 1 : 0;
+      } else {
+        q.marks = (q.userPc != null && q.userPc === q.correctPc) ? 1 : 0;
+      }
+      total += q.marks;
+
+      const marksEl = $(`${q.id}-marks`);
+      if (marksEl) marksEl.textContent = `${q.marks} / 1`;
+      renderMiniKeyboardsForQuestion(q);
+
+      if (state.inputMode === INPUT_MODE.KEYBOARD) {
+        const actions = $(`${q.id}-kbd-actions`); if (actions) actions.remove();
+        const mount = $(`${q.id}-kbd-mount`); if (mount) mount.remove();
+      }
+    }
+
+    resultsSummary.innerHTML = `Total: <strong>${total} / ${max}</strong><br>Percentage: <strong>${Math.round((total / max) * 1000) / 10}%</strong>`;
+    resultsPanel.classList.remove("hidden");
+    downloadScorecardBtn.disabled = false;
+    window.__intervalsSendHeight?.();
+  }
+
+  // -------------------- PDF helpers --------------------
+  function addCanvasToPdfPageCentered({ canvas, pdf, marginPt }) {
+    const pageW = pdf.internal.pageSize.getWidth(); const pageH = pdf.internal.pageSize.getHeight();
+    const usableW = pageW - marginPt * 2; const usableH = pageH - marginPt * 2;
+    const scale = Math.min(usableW / canvas.width, usableH / canvas.height);
+    const drawW = canvas.width * scale; const drawH = canvas.height * scale;
+    const x = (pageW - drawW) / 2; const y = (pageH - drawH) / 2;
+    pdf.addImage(canvas.toDataURL("image/png"), "PNG", x, y, drawW, drawH);
+  }
+
+  async function renderHtmlPagesToPdf({ hostEl, pages, filename }) {
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+    hostEl.innerHTML = ""; hostEl.classList.remove("hidden");
+    for (let i = 0; i < pages.length; i++) {
+      hostEl.innerHTML = ""; hostEl.appendChild(pages[i]);
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const canvas = await window.html2canvas(hostEl, { scale: 2, backgroundColor: "#ffffff", useCORS: true });
+      if (i > 0) pdf.addPage("a4", "portrait");
+      addCanvasToPdfPageCentered({ canvas, pdf, marginPt: PDF_MARGIN_PT });
+    }
+    pdf.save(filename);
+    hostEl.classList.add("hidden"); hostEl.innerHTML = "";
+  }
+
+  // -------------------- Task sheet PDF --------------------
+  function buildTaskSheetPages() {
+    const loadedAt = state.createdOnText ? `Created On: ${state.createdOnText}` : "";
+    const totalQ = state.questions.length;
+
+    if (state.inputMode === INPUT_MODE.DROPDOWN) {
+      const chunks = chunkArray(state.questions, TASK_Q_PER_PAGE_DROPDOWN);
+      return chunks.map((chunk, pageIndex) => {
+        const page = document.createElement("div"); page.className = "printPage";
+        const titleImg = document.createElement("img"); titleImg.className = "sheetTitleImage"; titleImg.src = "images/titledownload.png"; titleImg.alt = "Intervals";
+        const title = document.createElement("div"); title.className = "sheetTitle"; title.textContent = "Intervals — Task Sheet";
+        const meta = document.createElement("div"); meta.className = "sheetMeta"; meta.textContent = `${loadedAt ? loadedAt + " • " : ""}${totalQ} questions • Page ${pageIndex + 1} / ${chunks.length}`;
+        const list = document.createElement("ol"); list.className = "sheetList";
+
+        chunk.forEach((q, localIdx) => {
+          const number = pageIndex * TASK_Q_PER_PAGE_DROPDOWN + localIdx + 1;
+          const item = document.createElement("li"); item.className = "sheetQ";
+          const qname = document.createElement("div"); qname.className = "sheetQName"; qname.textContent = `${number}. ${questionTitle(q)}`;
+          const row = document.createElement("div"); row.className = "sheetLineRow";
+          const box = document.createElement("div"); box.className = "sheetLine";
+          box.innerHTML = `<span>Target Note:</span> <span class="dots">............................</span>`;
+          row.appendChild(box);
+          item.appendChild(qname); item.appendChild(row); list.appendChild(item);
+        });
+
+        page.appendChild(titleImg); page.appendChild(title); page.appendChild(meta); page.appendChild(list);
+        return page;
+      });
+    }
+
+    const chunks = chunkArray(state.questions, TASK_Q_PER_PAGE_KBD);
+    const printStartPitch = pitchFromPcOct(0, TASK_KBD_START_OCT);
+
+    return chunks.map((chunk, pageIndex) => {
+      const page = document.createElement("div"); page.className = "printPage";
+      const titleImg = document.createElement("img"); titleImg.className = "sheetTitleImage"; titleImg.src = "images/titledownload.png"; titleImg.alt = "Intervals";
+      const title = document.createElement("div"); title.className = "sheetTitle"; title.textContent = "Intervals — Task Sheet";
+      const meta = document.createElement("div"); meta.className = "sheetMeta"; meta.textContent = `${loadedAt ? loadedAt + " • " : ""}${totalQ} questions • Page ${pageIndex + 1} / ${chunks.length}`;
+      const list = document.createElement("ol"); list.className = "sheetList";
+
+      chunk.forEach((q, localIdx) => {
+        const number = pageIndex * TASK_Q_PER_PAGE_KBD + localIdx + 1;
+        const item = document.createElement("li"); item.className = "sheetQ";
+        const qname = document.createElement("div"); qname.className = "sheetQName"; qname.textContent = `${number}. ${questionTitle(q)}`;
+        const kbdBox = document.createElement("div"); kbdBox.className = "sheetKbd";
+        const mount = document.createElement("div"); mount.className = "mount";
+
+        const hl = new Map();
+        hl.set(q.rootPitch, "printHit"); // Starting note is highlighted
+
+        mount.appendChild(buildKeyboardSvg({
+          startPitch: printStartPitch, octaves: TASK_KBD_OCTAVES, includeEndC: TASK_KBD_INCLUDE_END_C,
+          widthPx: 700, heightPx: 150, interactive: false, ariaLabel: "Printable keyboard", highlight: hl,
+          theme: { frameFill: "#fff", whiteFill: "#fff", whiteStroke: "#000", blackFill: "#fff", blackStroke: "#000" }
+        }));
+
+        kbdBox.appendChild(mount); item.appendChild(qname); item.appendChild(kbdBox); list.appendChild(item);
+      });
+
+      page.appendChild(titleImg); page.appendChild(title); page.appendChild(meta);
+      const hint = document.createElement("div"); hint.className = "sheetHint"; hint.textContent = "Colour in / mark the correct target note on the keyboards for each question.";
+      page.appendChild(hint); page.appendChild(list);
+      return page;
+    });
+  }
+
+  async function downloadTaskSheetPdf() {
+    if (!state.started || !state.questions.length) return;
+    const pages = buildTaskSheetPages();
+    const fileStamp = new Date().toISOString().slice(0, 10);
+    await renderHtmlPagesToPdf({ hostEl: taskSheetTemplate, pages, filename: `Intervals Task Sheet (${fileStamp}).pdf` });
+  }
+
+  // -------------------- Scorecard PDF --------------------
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c]));
+  }
+
+  function buildScorecardPages(playerName, total, max) {
+    const loadedAt = state.createdOnText ? `Created On: ${state.createdOnText}` : "";
+    const totalQ = state.questions.length;
+    const chunks = chunkArray(state.questions, 24);
+
+    return chunks.map((chunk, pageIndex) => {
+      const page = document.createElement("div"); page.className = "printPage";
+      const titleImg = document.createElement("img"); titleImg.className = "sheetTitleImage"; titleImg.src = "images/titledownload.png"; titleImg.alt = "Intervals";
+      const title = document.createElement("div"); title.className = "sheetTitle"; title.textContent = "Intervals — Scorecard";
+      const meta = document.createElement("div"); meta.className = "sheetMeta"; meta.textContent = `${loadedAt ? loadedAt + " • " : ""}${totalQ} questions • Page ${pageIndex + 1} / ${chunks.length}`;
+      
+      page.appendChild(titleImg); page.appendChild(title); page.appendChild(meta);
+
+      if (pageIndex === 0) {
+        const top = document.createElement("div"); top.className = "sheetQ";
+        top.innerHTML = `<div class="sheetQName">Name: ${escapeHtml(playerName)}</div><div style="font-weight:900;">Score: ${total} / ${max} (${Math.round((total / max) * 1000) / 10}%)</div>`;
+        page.appendChild(top);
+      }
+
+      const list = document.createElement("ol"); list.className = "sheetList";
+      const startIdx = pageIndex * 24;
+      chunk.forEach((q, localIdx) => {
+        const idx = startIdx + localIdx;
+        const item = document.createElement("li"); item.className = "sheetQ";
+        const resultUserPitch = determineUserPitchForResults(q);
+        const chosen = resultUserPitch == null ? "—" : noteLabelForPc(pcFromPitch(resultUserPitch));
+        const correct = noteLabelForPc(q.correctPc);
+
+        item.innerHTML = `
+          <div class="sheetQName">${idx + 1}. ${questionTitle(q)} — ${q.marks} / 1</div>
+          <div style="font-weight:800; font-size:12px; opacity:.9; line-height:1.45;">
+            Your answer: <strong>${escapeHtml(chosen)}</strong><br>
+            Correct: <strong>${escapeHtml(correct)}</strong>
+          </div>`;
+        list.appendChild(item);
+      });
+      page.appendChild(list); return page;
+    });
+  }
+
+  async function downloadScorecardPdf() {
+    if (!state.submitted) { alert("Submit your answers first, then download the scorecard."); return; }
+    const prev = localStorage.getItem("intervals_player_name") || "";
+    const name = (window.prompt("Enter your name for the scorecard:", prev) ?? "").trim();
+    const playerName = name || "Player";
+    if (name) localStorage.setItem("intervals_player_name", name);
+    const total = state.questions.reduce((a, q) => a + (q.marks || 0), 0);
+    const max = state.questions.length;
+    const pages = buildScorecardPages(playerName, total, max);
+    const fileStamp = new Date().toISOString().slice(0, 10);
+    await renderHtmlPagesToPdf({ hostEl: scorecardTemplate, pages, filename: `Intervals Scorecard (${playerName}) (${fileStamp}).pdf` });
+  }
+
+  // -------------------- Top keyboard init --------------------
+  function initTopKeyboard() {
+    topKeyboardMount.innerHTML = "";
+    topKeyboardMount.appendChild(buildKeyboardSvg({
+      startPitch: pitchFromPcOct(0, KBD_START_OCT), octaves: KBD_OCTAVES, widthPx: 1100, heightPx: 220, interactive: true, ariaLabel: "Interactive keyboard",
+      onKeyDown: async (pitch, groupEl) => {
+        await resumeAudioIfNeeded(); stopAllNotes(0.02); await playPitchesWindowed([pitch], 0.9); flashKeyGroup(groupEl, 260);
+      },
+    }));
+  }
+
+  // -------------------- Events --------------------
+  function bindEvents() {
+    questionCountSelect?.addEventListener("change", updatePageAdvice);
+    beginBtn.addEventListener("click", async () => { await resumeAudioIfNeeded(); startGame(); });
+    infoBtn.addEventListener("click", () => infoModal.classList.remove("hidden"));
+    infoOk.addEventListener("click", () => infoModal.classList.add("hidden"));
+    infoModal.addEventListener("click", (e) => { if (e.target === infoModal) infoModal.classList.add("hidden"); });
+    inputModeBtn.addEventListener("click", () => {
+      if (!state.started || state.submitted) return;
+      state.inputMode = state.inputMode === INPUT_MODE.DROPDOWN ? INPUT_MODE.KEYBOARD : INPUT_MODE.DROPDOWN;
+      syncInputModeBtnText(); updateKeyboardModeHint(); renderQuiz();
+    });
+    downloadTaskBtn.addEventListener("click", downloadTaskSheetPdf);
+    downloadScorecardBtn.addEventListener("click", downloadScorecardPdf);
+    submitBtn.addEventListener("click", () => { if (!state.started || state.submitted) return; markAll(); });
+    resetBtn.addEventListener("click", resetGameToInitial);
+    resetBtn2.addEventListener("click", resetGameToInitial);
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !infoModal.classList.contains("hidden")) infoModal.classList.add("hidden"); });
+  }
+
+  function init() {
+    setupIframeAutoHeight(); initTopKeyboard(); bindEvents(); updatePageAdvice(); resetGameToInitial();
+  }
+
+  init();
+})();
