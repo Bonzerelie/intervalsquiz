@@ -855,7 +855,7 @@
           const qname = document.createElement("div"); qname.className = "sheetQName"; qname.textContent = `${number}. ${questionTitle(q)}`;
           const row = document.createElement("div"); row.className = "sheetLineRow";
           const box = document.createElement("div"); box.className = "sheetLine";
-          box.innerHTML = `<span>Target Note:</span> <span class="dots">............................</span>`;
+          box.innerHTML = `<span>Target Note:</span> <span class="dots">..............................................................</span>`;
           row.appendChild(box);
           item.appendChild(qname); item.appendChild(row); list.appendChild(item);
         });

@@ -501,7 +501,7 @@ button:disabled{ opacity:.45; cursor:not-allowed; transform:none; }
   font-weight: 900;
   font-size: 12px;
   line-height: 1.1;
-  min-height: 22px;
+  min-height: 46px;
   display:flex;
   align-items:flex-end;
   justify-content:flex-start;
