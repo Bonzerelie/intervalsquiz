@@ -955,6 +955,7 @@
 
       if (pageIndex === 0) {
         const top = document.createElement("div"); top.className = "sheetQ";
+        top.style.marginBottom = "10px";
         top.innerHTML = `<div class="sheetQName">Name: ${escapeHtml(playerName)}</div><div style="font-weight:900;">Score: ${total} / ${max} (${Math.round((total / max) * 1000) / 10}%)</div>`;
         page.appendChild(top);
       }
