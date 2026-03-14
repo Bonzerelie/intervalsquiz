@@ -26,7 +26,7 @@
   const TASK_KBD_OCTAVES = 2;
   const TASK_KBD_INCLUDE_END_C = true;
 
-  const TASK_Q_PER_PAGE_KBD = 12;
+  const TASK_Q_PER_PAGE_KBD = 10;
   const TASK_Q_PER_PAGE_DROPDOWN = 24;
 
   const PDF_MARGIN_PT = 18;
@@ -72,7 +72,6 @@
   const beginModal = $("beginModal");
   const beginBtn = $("beginBtn");
   const questionCountSelect = $("questionCountSelect");
-  const pageAdvice = $("pageAdvice");
 
   const infoBtn = $("infoBtn");
   const infoModal = $("infoModal");
@@ -106,6 +105,11 @@
 
   const bufferPromiseCache = new Map();
   const activeVoices = new Set();
+
+  function playUiSound(filename) {
+    const audio = new Audio(`${AUDIO_DIR}/${filename}`);
+    audio.play().catch(() => {});
+  }
 
   function postHeightToParent(height) {
     if (window.parent === window) return;
@@ -447,12 +451,13 @@
   function generateQuestions(count) {
     const target = clampQuestions(count);
     const picked = [];
+    const seen = new Set();
     
     // The bounds for our 2-octave question keyboard
     const kbdMinPitch = Q_KBD_START_OCT * 12; // 36 (C3)
     const kbdMaxPitch = kbdMinPitch + (Q_KBD_OCTAVES * 12); // 60 (C5)
 
-    for (let i = 0; i < target; i++) {
+    while (picked.length < target) {
       const interval = INTERVALS[Math.floor(Math.random() * INTERVALS.length)];
       const direction = Math.random() < 0.5 ? 1 : -1;
       
@@ -470,10 +475,17 @@
 
       // Safe root pitch guaranteeing the answer fits on the keyboard
       const rootPitch = Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart;
+      
+      // Ensure uniqueness
+      const qKey = `${rootPitch}_${interval.semitones}_${direction}`;
+      if (seen.has(qKey)) continue;
+      
+      seen.add(qKey);
+      
       const correctPitch = rootPitch + (direction * interval.semitones);
       
       picked.push({
-        id: `q${i + 1}`,
+        id: `q${picked.length + 1}`,
         rootPitch,
         interval,
         direction,
@@ -498,11 +510,12 @@
     quizMeta.textContent = "";
     beginModal.classList.remove("hidden");
     inputModeBtn.disabled = true; inputModeBtn.textContent = "Input mode: Dropdown";
-    updateKeyboardModeHint(); updatePageAdvice();
+    updateKeyboardModeHint(); 
   }
 
   function startGame() {
     state.started = true; state.submitted = false;
+    state.questionCount = clampQuestions(Number(questionCountSelect?.value ?? 10));
     state.questions = generateQuestions(state.questionCount);
     state.createdOn = new Date();
     state.createdOnText = state.createdOn.toLocaleDateString("en-GB");
@@ -527,15 +540,6 @@
     const n = Math.max(1, Math.floor(size));
     for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
     return out;
-  }
-
-  function updatePageAdvice() {
-    const qCount = clampQuestions(Number(questionCountSelect?.value ?? 10));
-    state.questionCount = qCount;
-    const perPageLimit = state.inputMode === INPUT_MODE.KEYBOARD ? TASK_Q_PER_PAGE_KBD : TASK_Q_PER_PAGE_DROPDOWN;
-    const pages = Math.ceil(qCount / perPageLimit);
-    const perPage = qCount <= perPageLimit ? `${qCount} on 1 page` : `${perPageLimit} per page (last page ${qCount % perPageLimit || perPageLimit})`;
-    if (pageAdvice) pageAdvice.textContent = `PDF tip: ${qCount} questions → ${pages} A4 page(s), ${perPage}.`;
   }
 
   // -------------------- Rendering --------------------
@@ -835,18 +839,19 @@
     hostEl.classList.add("hidden"); hostEl.innerHTML = "";
   }
 
-  // -------------------- Task sheet PDF --------------------
+  // -------------------- Task Sheet PDF --------------------
   function buildTaskSheetPages() {
-    const loadedAt = state.createdOnText ? `Created On: ${state.createdOnText}` : "";
     const totalQ = state.questions.length;
 
     if (state.inputMode === INPUT_MODE.DROPDOWN) {
       const chunks = chunkArray(state.questions, TASK_Q_PER_PAGE_DROPDOWN);
       return chunks.map((chunk, pageIndex) => {
-        const page = document.createElement("div"); page.className = "printPage";
+        const page = document.createElement("div"); 
+        page.className = "printPage";
+        page.style.position = "relative"; 
+
         const titleImg = document.createElement("img"); titleImg.className = "sheetTitleImage"; titleImg.src = "images/titledownload.png"; titleImg.alt = "Intervals";
-        const title = document.createElement("div"); title.className = "sheetTitle"; title.textContent = "Intervals — Task Sheet";
-        const meta = document.createElement("div"); meta.className = "sheetMeta"; meta.textContent = `${loadedAt ? loadedAt + " • " : ""}${totalQ} questions • Page ${pageIndex + 1} / ${chunks.length}`;
+        const title = document.createElement("div"); title.className = "sheetTitle"; title.textContent = "Name: .........................................        Date: ...................";
         const list = document.createElement("ol"); list.className = "sheetList";
 
         chunk.forEach((q, localIdx) => {
@@ -860,7 +865,21 @@
           item.appendChild(qname); item.appendChild(row); list.appendChild(item);
         });
 
-        page.appendChild(titleImg); page.appendChild(title); page.appendChild(meta); page.appendChild(list);
+        page.appendChild(titleImg); 
+        page.appendChild(title); 
+        
+        const hint = document.createElement("div"); 
+        hint.className = "sheetHint"; 
+        hint.textContent = "Write the name of the correct target note on the dotted line for each question.";
+        page.appendChild(hint); 
+        
+        page.appendChild(list);        
+
+        const footer = document.createElement("div");
+        footer.style.cssText = "position: absolute; bottom: 0px; left: 0; right: 0; text-align: center; font-size: 12px; opacity: 0.8;";
+        footer.textContent = `${totalQ} questions • Page ${pageIndex + 1} / ${chunks.length}`;
+        page.appendChild(footer);
+
         return page;
       });
     }
@@ -869,10 +888,12 @@
     const printStartPitch = pitchFromPcOct(0, TASK_KBD_START_OCT);
 
     return chunks.map((chunk, pageIndex) => {
-      const page = document.createElement("div"); page.className = "printPage";
+      const page = document.createElement("div"); 
+      page.className = "printPage";
+      page.style.position = "relative";
+
       const titleImg = document.createElement("img"); titleImg.className = "sheetTitleImage"; titleImg.src = "images/titledownload.png"; titleImg.alt = "Intervals";
-      const title = document.createElement("div"); title.className = "sheetTitle"; title.textContent = "Intervals — Task Sheet";
-      const meta = document.createElement("div"); meta.className = "sheetMeta"; meta.textContent = `${loadedAt ? loadedAt + " • " : ""}${totalQ} questions • Page ${pageIndex + 1} / ${chunks.length}`;
+      const title = document.createElement("div"); title.className = "sheetTitle"; title.textContent = "Name: .........................................        Date: ...................";
       const list = document.createElement("ol"); list.className = "sheetList";
 
       chunk.forEach((q, localIdx) => {
@@ -894,9 +915,15 @@
         kbdBox.appendChild(mount); item.appendChild(qname); item.appendChild(kbdBox); list.appendChild(item);
       });
 
-      page.appendChild(titleImg); page.appendChild(title); page.appendChild(meta);
+      page.appendChild(titleImg); page.appendChild(title);
       const hint = document.createElement("div"); hint.className = "sheetHint"; hint.textContent = "Colour in / mark the correct target note on the keyboards for each question.";
       page.appendChild(hint); page.appendChild(list);
+
+      const footer = document.createElement("div");
+      footer.style.cssText = "position: absolute; bottom: 0px; left: 0; right: 0; text-align: center; font-size: 12px; opacity: 0.8;";
+      footer.textContent = `${totalQ} questions • Page ${pageIndex + 1} / ${chunks.length}`;
+      page.appendChild(footer);
+
       return page;
     });
   }
@@ -979,26 +1006,55 @@
 
   // -------------------- Events --------------------
   function bindEvents() {
-    questionCountSelect?.addEventListener("change", updatePageAdvice);
-    beginBtn.addEventListener("click", async () => { await resumeAudioIfNeeded(); startGame(); });
-    infoBtn.addEventListener("click", () => infoModal.classList.remove("hidden"));
-    infoOk.addEventListener("click", () => infoModal.classList.add("hidden"));
-    infoModal.addEventListener("click", (e) => { if (e.target === infoModal) infoModal.classList.add("hidden"); });
+    beginBtn.addEventListener("click", async () => { 
+      playUiSound("select1.mp3");
+      await resumeAudioIfNeeded(); 
+      startGame(); 
+    });
+    infoBtn.addEventListener("click", () => {
+      playUiSound("select1.mp3");
+      infoModal.classList.remove("hidden");
+    });
+    infoOk.addEventListener("click", () => {
+      playUiSound("back1.mp3");
+      infoModal.classList.add("hidden");
+    });
+    infoModal.addEventListener("click", (e) => { 
+      if (e.target === infoModal) infoModal.classList.add("hidden"); 
+    });
     inputModeBtn.addEventListener("click", () => {
       if (!state.started || state.submitted) return;
+      playUiSound("select1.mp3");
       state.inputMode = state.inputMode === INPUT_MODE.DROPDOWN ? INPUT_MODE.KEYBOARD : INPUT_MODE.DROPDOWN;
       syncInputModeBtnText(); updateKeyboardModeHint(); renderQuiz();
     });
-    downloadTaskBtn.addEventListener("click", downloadTaskSheetPdf);
-    downloadScorecardBtn.addEventListener("click", downloadScorecardPdf);
-    submitBtn.addEventListener("click", () => { if (!state.started || state.submitted) return; markAll(); });
-    resetBtn.addEventListener("click", resetGameToInitial);
-    resetBtn2.addEventListener("click", resetGameToInitial);
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !infoModal.classList.contains("hidden")) infoModal.classList.add("hidden"); });
+    downloadTaskBtn.addEventListener("click", () => {
+      playUiSound("select1.mp3");
+      downloadTaskSheetPdf();
+    });
+    downloadScorecardBtn.addEventListener("click", () => {
+      playUiSound("select1.mp3");
+      downloadScorecardPdf();
+    });
+    submitBtn.addEventListener("click", () => { 
+      if (!state.started || state.submitted) return; 
+      markAll(); 
+    });
+    resetBtn.addEventListener("click", () => {
+      playUiSound("select1.mp3");
+      resetGameToInitial();
+    });
+    resetBtn2.addEventListener("click", () => {
+      playUiSound("select1.mp3");
+      resetGameToInitial();
+    });
+    document.addEventListener("keydown", (e) => { 
+      if (e.key === "Escape" && !infoModal.classList.contains("hidden")) infoModal.classList.add("hidden"); 
+    });
   }
 
   function init() {
-    setupIframeAutoHeight(); initTopKeyboard(); bindEvents(); updatePageAdvice(); resetGameToInitial();
+    setupIframeAutoHeight(); initTopKeyboard(); bindEvents(); resetGameToInitial();
   }
 
   init();

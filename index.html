@@ -27,13 +27,15 @@
     <div id="beginModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="beginTitle">
       <div class="modalCard" role="document">
         <div class="modalHeader">
+          <img class="heroTitleImg" src="images/title.png" alt="Musical Intervals Quiz" /><br>
           <h2 id="beginTitle">Welcome! 👋</h2>
         </div>
 
         <div class="modalBody">
           <p>
-            This quiz asks you to correctly identify musical intervals. You will be given a starting note and an interval direction (e.g., Major Third above C). 
-            Fill out the quiz, submit your answers, and see how you did! You can use the piano image at the top to work notes out, and the 'Information' button for help.
+            For this quiz you'll need to correctly identify musical intervals. You will be given a starting note and an interval direction (e.g., Major Third above C), and your task is to find the target note. 
+            Fill out the quiz, submit your answers, and see how you did! You can use the virtual piano at the top to work notes out, and the 'Information' button for help, and can change the input method from a dropdown to a virtual keyboard for each question.
+            <br><br>You can also download the quiz as an A4 task sheet! The number of pages will adjust to the number of questions, and the input method you choose for the quiz will be shown on the task sheet download - either write the note name, or colour in the note on a keyboard.
           </p>
 
           <div class="beginOptions" aria-label="print options">
@@ -62,12 +64,11 @@
                 <option value="20">20</option>
               </select>
             </div>
-            <div class="beginAdvice" id="pageAdvice">—</div>
           </div>
         </div>
 
         <div class="modalFooter">
-          <button id="beginBtn" class="primary pulse" type="button">Begin Game</button>
+          <button id="beginBtn" class="primary pulse" type="button">Begin Quiz</button>
         </div>
       </div>
     </div>
@@ -78,7 +79,7 @@
         <button id="inputModeBtn" type="button" disabled>Input mode: Dropdown</button>
         <button id="downloadTaskBtn" type="button" disabled>Download as A4 task sheet</button>
         <button id="downloadScorecardBtn" type="button" disabled>Download scorecard</button>
-        <button id="resetBtn" type="button" disabled>Reset game</button>
+        <button id="resetBtn" type="button" disabled>Reset quiz</button>
       </div>
     </section>
 
